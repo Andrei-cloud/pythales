@@ -35,16 +35,21 @@ class TestParseMessage(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Expected message of length 6 but actual received message length is 2'):
             parse_message(b'\x00\x0600')
 
-    def test_invalid_message_header(self):
-        data = b'\x00\x06SSSS00'
-        header = b'XDXD'
-        with self.assertRaisesRegex(ValueError, 'Invalid header'):
-            parse_message(data, header)
-
-    def test_parse_message_command_code_and_data(self):
-        parsed = parse_message(b'\x00\x07HDRDCXX', b'HDR')
-        self.assertEqual(parsed[0], b'DC')    
-        self.assertEqual(parsed[1], b'XX')    
+    def test_dynamic_header_and_payload(self):
+        # header=ABCD, command=12, no extra data
+        data = b'\x00\x06ABCD12'
+        header, cmd, payload = parse_message(data)
+        self.assertEqual(header, b'ABCD')
+        self.assertEqual(cmd, b'12')
+        self.assertEqual(payload, b'')
+    
+    def test_dynamic_header_and_payload_with_extra(self):
+        # header=FWDR, command=EX, data=YZ
+        data = b'\x00\x08FWDREXYZ'
+        header, cmd, payload = parse_message(data)
+        self.assertEqual(header, b'FWDR')
+        self.assertEqual(cmd, b'EX')
+        self.assertEqual(payload, b'YZ')
 
 
 class TestOutgoingMessageClass(unittest.TestCase):

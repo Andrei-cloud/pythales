@@ -1,8 +1,8 @@
-
 import sys
 import socket
 import struct
 import os
+import threading
 
 from tracetools.tracetools import trace
 from collections import OrderedDict
@@ -290,8 +290,7 @@ class EC(DummyMessage):
         self.fields = OrderedDict()
 
         # ZPK
-        if self.data[0:1] in [b'U']:
-            field_size = 33
+        field_size = 33 if self.data[0:1] == b'U' else 32
         self.fields['ZPK'] = self.data[0:field_size]
         self.data = self.data[field_size:]
 
@@ -424,31 +423,56 @@ class OutgoingMessage(DummyMessage):
         return struct.pack("!H", len(self.header) + len(data)) + self.header + data if self.header else struct.pack("!H", len(data)) + data
 
 
-def parse_message(data=None, header=None):
+def parse_message(data=None):
     """
-    Parse the incoming message, check the header and return tuple (command code, command data)
+    Parse the incoming message, extract a 4-byte header, and return tuple (header_bytes, command code, command data)
     """
     if not data:
         return None
-    
     length = struct.unpack_from("!H", data[:2])[0]
-    if(length != len(data) - 2):
-        raise ValueError('Expected message of length {0} but actual received message length is {1}'.format(length, len(data) - 2))
-    
-    if header:
-        for h, d in zip(header, data[2:]):
-            if h != d:
-                raise ValueError('Invalid header')
-        header = header 
-
-    data = data[2 + len(header) : ] if header else data[2:]
-    return (data[:2], data[2:])
+    if length != len(data) - 2:
+        raise ValueError(f'Expected message of length {length} but actual received message length is {len(data) - 2}')
+    # Dynamic 4-byte header following the length
+    header_len = 4
+    header_bytes = data[2:2 + header_len]
+    # Command code is next 2 bytes
+    command_code = data[2 + header_len:2 + header_len + 2]
+    # Remaining is command-specific data
+    command_data = data[2 + header_len + 2:]
+    return (header_bytes, command_code, command_data)
 
 
 class HSM():
-    def __init__(self, header=None, key=None, debug=None, skip_parity=None, port=None, approve_all=None):
+    # Map command codes to parser classes to avoid long if/elif chains
+    COMMAND_CLASSES = {
+        b'A0': A0,
+        b'BU': BU,
+        b'CA': CA,
+        b'CW': CW,
+        b'CY': CY,
+        b'DC': DC,
+        b'EC': EC,
+        b'FA': FA,
+        b'HC': HC,
+        b'NC': NC,
+    }
+    # Map command codes to handler methods for response generation
+    RESPONSE_HANDLERS = {
+        b'A0': lambda self, request: self.generate_key_a0(request),
+        b'BU': lambda self, request: self.get_key_check_value(request),
+        b'CA': lambda self, request: self.translate_pinblock(request),
+        b'CW': lambda self, request: self.generate_cvv(request),
+        b'CY': lambda self, request: self.verify_cvv(request),
+        b'DC': lambda self, request: self.verify_pin(request),
+        b'EC': lambda self, request: self.verify_pin(request),
+        b'FA': lambda self, request: self.translate_zpk(request),
+        b'HC': lambda self, request: self.generate_key(request),
+        b'NC': lambda self, request: self.get_diagnostics_data(),
+    }
+
+    def __init__(self, key=None, debug=None, skip_parity=None, port=None, approve_all=None):
         self.firmware_version = '0007-E000'        
-        self.header = str2bytes(header) if header else b''
+        self.header = b''
         self.LMK = unhexlify(key) if key else unhexlify('deafbeedeafbeedeafbeedeafbeedeaf')
         self.cipher = DES3.new(self.LMK, DES3.MODE_ECB)
         self.debug = debug
@@ -470,12 +494,39 @@ class HSM():
             sys.exit()
 
 
+    def _recv_exact(self, size, client_name=None):
+        buf = b''
+        while len(buf) < size:
+            chunk = self.conn.recv(size - len(buf))
+            if not chunk:
+                self.conn.shutdown(socket.SHUT_RDWR)
+                print(f"Client disconnected during recv: {client_name}")
+                raise IOError("Connection closed while reading")
+            buf += chunk
+        return buf
+
+    def recv_message(self, client_name=None):
+        # frame-based read: length prefix + body
+        length_bytes = self._recv_exact(2, client_name)
+        length = struct.unpack("!H", length_bytes)[0]
+        body = self._recv_exact(length, client_name)
+        data = length_bytes + body
+        trace(data, f'<< {len(data)} bytes received from {client_name}: ')
+        return data
+
     def recv(self, client_name=None):
         """
+        Receive data from client connection and ensure it's in bytes format
         """
         data = self.conn.recv(4096)
         if len(data):
-            trace('<< {} bytes received from {}: '.format(len(data), client_name), data)
+            # Ensure data is bytes type before passing to trace
+            if isinstance(data, str):
+                data = data.encode('utf-8')
+            # Always make sure we're passing bytes to tracetools.trace()
+            if not isinstance(data, bytes):
+                data = bytes(data)
+            trace(data, '<< {} bytes received from {}: '.format(len(data), client_name))
             return data
         else:
             self.conn.shutdown(socket.SHUT_RDWR)
@@ -484,57 +535,78 @@ class HSM():
 
 
     def send(self, response, client_name=None):
-        """
-        """
+        # include thread name and active count in logs
+        thread_name = threading.current_thread().name
         response_data = response.build()
         self.conn.send(response_data)
-        trace('>> {} bytes sent to {}:'.format(len(response_data), client_name), response_data)
+        trace(response_data, f'>> [{thread_name}] {len(response_data)} bytes sent to {client_name}:')
+        print(f"[{thread_name}] Active threads: {threading.active_count()}")
         print(response.trace())
-        
+
+    def _handle_message(self, data, client_name):
+        thread_name = threading.current_thread().name
+        print(f"[{thread_name}] Handling message from {client_name}")
+        try:
+            # parse and build response
+            header_bytes, command_code, command_data = parse_message(data)
+            self.header = header_bytes
+            # instantiate request using mapping
+            request_cls = self.COMMAND_CLASSES.get(command_code)
+            if not request_cls:
+                print(f"Unsupported command: {command_code.decode('utf-8')}")
+                return
+            request = request_cls(command_data)
+
+            # trace and select response handler
+            print(request.trace())
+            handler = self.RESPONSE_HANDLERS.get(command_code)
+            if handler:
+                response = handler(self, request)
+            else:
+                # fallback to legacy dispatcher
+                response = self.get_response(request)
+            self.send(response, client_name)
+        except Exception as e:
+            print(f"Error processing async request: {e}")
 
     def run(self):
         self.init_connection()
         print(self.info())
-
-        while True:
-            (self.conn, (ip, port)) = self.sock.accept()
-            client_name = ip + ':' + str(port)
-            print ('Connected client: {}'.format(client_name))
-
+        try:
+            # main accept/process loop
             while True:
                 try:
-                    data = self.recv(client_name)
+                    self.conn, (ip, port) = self.sock.accept()
+                except Exception as e:
+                    print(f"Error accepting connection: {e}")
+                    continue
+                client_name = ip + ':' + str(port)
+                print(f'Connected client: {client_name}')
+                try:
+                    while True:
+                        data = self.recv_message(client_name)
+                        thread_name = f"HSM-{client_name}-{threading.active_count()}"
+                        threading.Thread(target=self._handle_message,
+                                         args=(data, client_name),
+                                         daemon=True,
+                                         name=thread_name).start()
                 except IOError:
-                    break
-
-                command_code, command_data = parse_message(data, header=self.header)
-                if command_code == b'A0':
-                    request = A0(command_data)
-                elif command_code == b'BU':
-                    request = BU(command_data)
-                elif command_code == b'CA':
-                    request = CA(command_data)
-                elif command_code == b'CW':
-                    request = CW(command_data)
-                elif command_code == b'CY':
-                    request = CY(command_data)
-                elif command_code == b'DC':
-                    request = DC(command_data)
-                elif command_code == b'EC':
-                    request = EC(command_data)
-                elif command_code == b'FA':
-                    request = FA(command_data)
-                elif command_code == b'HC':
-                    request = HC(command_data)
-                elif command_code == b'NC':
-                    request = NC(command_data)
-                else:
-                    print('\nUnsupported command: ' + str(command_code, 'utf-8'));
-                    request = None
-    
-                print(request.trace())
-                response = self.get_response(request)
-                self.send(response, client_name)
+                    print(f"Connection lost: {client_name}")
+                except Exception as e:
+                    print(f"Error processing request from {client_name}: {e}")
+                finally:
+                    try:
+                        self.conn.close()
+                    except:
+                        pass
+                    print(f"Closed connection: {client_name}")
+        except KeyboardInterrupt:
+            print("\nServer shutdown requested, exiting...")
+        finally:
+            try:
+                self.sock.close()
+            except:
+                pass
            
 
     def info(self):
@@ -901,3 +973,30 @@ class HSM():
             response.set_response_code('ZZ')
             response.set_error_code('00')
             return response
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Thales HSM command simulator")
+    parser.add_argument('-p', '--port', type=int, default=1500,
+                        help='TCP port to listen, default 1500')
+    parser.add_argument('-k', '--key', type=str,
+                        help='LMK key in hex')
+    parser.add_argument('-H', '--header', type=str, default='',
+                        help='Message header')
+    parser.add_argument('-d', '--debug', action='store_true',
+                        help='Enable debug mode')
+    parser.add_argument('-s', '--skip-parity', action='store_true',
+                        help='Skip key parity checks')
+    parser.add_argument('-a', '--approve-all', action='store_true',
+                        help='Approve all requests')
+
+    args = parser.parse_args()
+    hsm = HSM(header=args.header,
+              key=args.key,
+              debug=args.debug,
+              skip_parity=args.skip_parity,
+              port=args.port,
+              approve_all=args.approve_all)
+    hsm.run()

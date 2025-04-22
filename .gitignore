@@ -53,8 +53,11 @@ docs/_build/
 # PyBuilder
 target/
 
+.vscode/
+
 # py8583 specific
 # contains all the files containing test iso messages
 iso/
 /.pydevproject
 /.project
+.DS_Store

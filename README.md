@@ -1,7 +1,16 @@
 # pythales
 
 
-A primitive implementation of [Thales HSM](https://en.wikipedia.org/wiki/Hardware_security_module) hardware security module) simulator. Only the basic (the most popular) HSM commands are implemented:
+A primitive implementation of [Thales HSM](https://en.wikipedia.org/wiki/Hardware_security_module) hardware security module) simulator.
+
+## Features
+
+- Asynchronous message processing using threads
+- Dynamic (non-hardcoded) message header support
+- Automatic client reconnection handling
+- Graceful shutdown on Ctrl+C
+
+Only the basic (the most popular) HSM commands are implemented:
 
 - A0 - Generate a Key
 - BU - Generate a Key check value 
@@ -12,6 +21,7 @@ A primitive implementation of [Thales HSM](https://en.wikipedia.org/wiki/Hardwar
 - FA - Translate a ZPK from ZMK to LMK
 - HC - Generate a TMK, TPK or PVK
 - NC - Diagnostics information
+- CW - Generate a Card Verification Code
 
 ## Installation
 
@@ -38,12 +48,12 @@ Run:
 ```bash
 cd examples/
 ./hsm_server.py --help # check the options
-./hsm_server.py -h SSSS -d --skip-parity
+./hsm_server.py -d --skip-parity
 ```
 
 Output example:
 ```
-# ./hsm_server.py -h SSSS -d --skip-parity
+# ./hsm_server.py -d --skip-parity
  LMK: DEAFBEEDEAFBEEDEAFBEEDEAFBEEDEAF
  Firmware version: 0007-E000
  Message header: SSSS
