@@ -556,7 +556,7 @@ class HSM():
             # instantiate request using mapping
             request_cls = self.COMMAND_CLASSES.get(command_code)
             if not request_cls:
-                print(f"Unsupported command: {command_code.decode('utf-8')}")
+                print(f"Unsupported command: {command_code.hex()}")
                 return
             request = request_cls(command_data)
 
