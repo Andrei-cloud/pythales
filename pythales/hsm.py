@@ -396,10 +396,9 @@ class NC(DummyMessage):
 
 class OutgoingMessage(DummyMessage):
     def __init__(self, data=None, header=None):
-        self.header = header
+        self._header = header
         self.description = None
         self.fields = OrderedDict()
-
 
     def set_response_code(self, response_code):
         """
@@ -416,13 +415,13 @@ class OutgoingMessage(DummyMessage):
 
     def build(self):
         """
-        Build the outgoing message (legacy)
+        Build the outgoing message using the stored header
         """
         data = b''
         for key, value in self.fields.items():
             data += value
 
-        return struct.pack("!H", len(self.header) + len(data)) + self.header + data if self.header else struct.pack("!H", len(data)) + data
+        return struct.pack("!H", len(self._header) + len(data)) + self._header + data if self._header else struct.pack("!H", len(data)) + data
 
 
 def parse_message(data=None):
@@ -460,21 +459,20 @@ class HSM():
     }
     # Map command codes to handler methods for response generation
     RESPONSE_HANDLERS = {
-        b'A0': lambda self, request: self.generate_key_a0(request),
-        b'BU': lambda self, request: self.get_key_check_value(request),
-        b'CA': lambda self, request: self.translate_pinblock(request),
-        b'CW': lambda self, request: self.generate_cvv(request),
-        b'CY': lambda self, request: self.verify_cvv(request),
-        b'DC': lambda self, request: self.verify_pin(request),
-        b'EC': lambda self, request: self.verify_pin(request),
-        b'FA': lambda self, request: self.translate_zpk(request),
-        b'HC': lambda self, request: self.generate_key(request),
-        b'NC': lambda self, request: self.get_diagnostics_data(),
+        b'A0': lambda self, request, header: self.generate_key_a0(request, header),
+        b'BU': lambda self, request, header: self.get_key_check_value(request, header),
+        b'CA': lambda self, request, header: self.translate_pinblock(request, header),
+        b'CW': lambda self, request, header: self.generate_cvv(request, header),
+        b'CY': lambda self, request, header: self.verify_cvv(request, header),
+        b'DC': lambda self, request, header: self.verify_pin(request, header),
+        b'EC': lambda self, request, header: self.verify_pin(request, header),
+        b'FA': lambda self, request, header: self.translate_zpk(request, header),
+        b'HC': lambda self, request, header: self.generate_key(request, header),
+        b'NC': lambda self, request, header: self.get_diagnostics_data(header),
     }
 
     def __init__(self, key=None, debug=None, skip_parity=None, port=None, approve_all=None):
         self.firmware_version = '0007-E000'        
-        self.header = b''
         self.LMK = unhexlify(key) if key else unhexlify('deafbeedeafbeedeafbeedeafbeedeaf')
         self.cipher = DES3.new(self.LMK, DES3.MODE_ECB)
         self.debug = debug
@@ -497,31 +495,34 @@ class HSM():
             sys.exit()
 
 
-    def _recv_exact(self, size, client_name=None):
+    def _recv_exact(self, conn, size, client_name=None):
         buf = b''
         while len(buf) < size:
-            chunk = self.conn.recv(size - len(buf))
+            chunk = conn.recv(size - len(buf))
             if not chunk:
-                self.conn.shutdown(socket.SHUT_RDWR)
+                try:
+                    conn.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
                 print(f"Client disconnected during recv: {client_name}")
                 raise IOError("Connection closed while reading")
             buf += chunk
         return buf
 
-    def recv_message(self, client_name=None):
+    def recv_message(self, conn, client_name=None):
         # frame-based read: length prefix + body
-        length_bytes = self._recv_exact(2, client_name)
+        length_bytes = self._recv_exact(conn, 2, client_name)
         length = struct.unpack("!H", length_bytes)[0]
-        body = self._recv_exact(length, client_name)
+        body = self._recv_exact(conn, length, client_name)
         data = length_bytes + body
         trace(data, f'<< {len(data)} bytes received from {client_name}: ')
         return data
 
-    def recv(self, client_name=None):
+    def recv(self, conn, client_name=None):
         """
         Receive data from client connection and ensure it's in bytes format
         """
-        data = self.conn.recv(4096)
+        data = conn.recv(4096)
         if len(data):
             # Ensure data is bytes type before passing to trace
             if isinstance(data, str):
@@ -532,27 +533,29 @@ class HSM():
             trace(data, '<< {} bytes received from {}: '.format(len(data), client_name))
             return data
         else:
-            self.conn.shutdown(socket.SHUT_RDWR)
+            try:
+                conn.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
             print ('Client disconnected: {}'.format(client_name))
             raise IOError
 
 
-    def send(self, response, client_name=None):
+    def send(self, conn, response, client_name=None):
         # include thread name and active count in logs
         thread_name = threading.current_thread().name
         response_data = response.build()
-        self.conn.send(response_data)
+        conn.send(response_data)
         trace(response_data, f'>> [{thread_name}] {len(response_data)} bytes sent to {client_name}:')
         print(f"[{thread_name}] Active threads: {threading.active_count()}")
         print(response.trace())
 
-    def _handle_message(self, data, client_name):
+    def _handle_message(self, conn, data, client_name):
         thread_name = threading.current_thread().name
         print(f"[{thread_name}] Handling message from {client_name}")
         try:
             # parse and build response
             header_bytes, command_code, command_data = parse_message(data)
-            self.header = header_bytes
             # instantiate request using mapping
             request_cls = self.COMMAND_CLASSES.get(command_code)
             if not request_cls:
@@ -564,13 +567,12 @@ class HSM():
             print(request.trace())
             handler = self.RESPONSE_HANDLERS.get(command_code)
             if handler:
-                response = handler(self, request)
+                response = handler(self, request, header_bytes)
             else:
-                # fallback to legacy dispatcher
-                response = self.get_response(request)
-            self.send(response, client_name)
+                response = self.get_response(request, header_bytes)
+            self.send(conn, response, client_name)
         except Exception as e:
-            print(f"Error processing async request: {e}")
+            print(f"Error processing async request from {client_name}: {e}")
 
     def run(self):
         self.init_connection()
@@ -584,7 +586,6 @@ class HSM():
                     print(f"Error accepting connection: {e}")
                     continue
                 client_name = ip + ':' + str(port)
-                # Name the client thread and reuse it for handling all messages sequentially
                 threading.Thread(target=self._client_thread,
                                  args=(conn, client_name),
                                  daemon=True,
@@ -602,16 +603,12 @@ class HSM():
         Handle a client connection: receive messages and process them asynchronously 
         while keeping the connection open.
         """
-        # save original connection and assign current
-        old_conn = getattr(self, 'conn', None)
-        self.conn = conn
         print(f'Connected client: {client_name}')
         try:
             # Process messages asynchronously in thread pool while keeping connection
             while True:
-                data = self.recv_message(client_name)
-                # Submit request processing to thread pool
-                self.thread_pool.submit(self._handle_message, data, client_name)
+                data = self.recv_message(conn, client_name)
+                self.thread_pool.submit(self._handle_message, conn, data, client_name)
         except IOError:
             print(f"Connection lost: {client_name}")
         except Exception as e:
@@ -622,9 +619,6 @@ class HSM():
             except:
                 pass
             print(f"Closed connection: {client_name}")
-            # restore previous connection if any
-            if old_conn is not None:
-                self.conn = old_conn
 
     def info(self):
         """
@@ -632,8 +626,6 @@ class HSM():
         dump = ''
         dump += 'LMK: {}\n'.format(raw2str(self.LMK))
         dump += 'Firmware version: {}\n'.format(self.firmware_version)
-        if self.header:
-            dump += 'Message header: {}\n'.format(self.header.decode('utf-8'))
         return dump
 
 
@@ -658,14 +650,14 @@ class HSM():
         return raw2B(decrypted_pinblock)
 
 
-    def generate_cvv(self, request):
+    def generate_cvv(self, request, header):
         """
         Get response to CW command
         """
-        response =  OutgoingMessage(data=None, header=self.header)
+        response =  OutgoingMessage(header=header)
         response.set_response_code('CX')
 
-        if not self.check_key_parity(request.get('CVK')):
+        if not self.check_key_parity(self.cipher, request.get('CVK')):
             self._debug_trace('CVK parity error')
             if self.approve_all:
                 self._debug_trace('Forced approval as --approve-all option set')
@@ -684,14 +676,14 @@ class HSM():
         return response     
 
 
-    def verify_cvv(self, request):
+    def verify_cvv(self, request, header):
         """
         Get response to CY command
         """
-        response =  OutgoingMessage(data=None, header=self.header)
+        response =  OutgoingMessage(header=header)
         response.set_response_code('CZ')
         
-        if not self.check_key_parity(request.get('CVK')):
+        if not self.check_key_parity(self.cipher, request.get('CVK')):
             self._debug_trace('CVK parity error')
             response.set_error_code('10')
             return response
@@ -714,12 +706,12 @@ class HSM():
         return response
 
 
-    def generate_key(self, request):
+    def generate_key(self, request, header):
         """
         Get response to HC command
         TODO: generating keys for different schemes
         """
-        response =  OutgoingMessage(data=None, header=self.header)
+        response =  OutgoingMessage(header=header)
         response.set_response_code('HD')
         response.set_error_code('00')
 
@@ -742,21 +734,21 @@ class HSM():
         return response
 
 
-    def check_key_parity(self, _key):
+    def check_key_parity(self, cipher, _key):
         """
         """
         if self.skip_parity_check:
             return True
         else:
             key = _key[1:] if _key[0:1] in [b'U'] else _key
-            return check_key_parity(self.cipher.decrypt(B2raw(key)))
+            return check_key_parity(cipher.decrypt(B2raw(key)))
 
 
-    def verify_pin(self, request):
+    def verify_pin(self, request, header):
         """
         Get response to DC or EC command
         """
-        response =  OutgoingMessage(data=None, header=self.header)
+        response =  OutgoingMessage(header=header)
         command_code = request.get_command_code()
 
         if command_code == b'DC':            
@@ -766,7 +758,7 @@ class HSM():
             response.set_response_code('ED')
             key_type = 'ZPK'
 
-        if not self.check_key_parity(request.get(key_type)):
+        if not self.check_key_parity(self.cipher, request.get(key_type)):
             self._debug_trace(key_type + ' parity error')
             if self.approve_all:
                 self._debug_trace('Forced approval as --approve-all option set')
@@ -775,7 +767,7 @@ class HSM():
                 response.set_error_code('10')
             return response
 
-        if not self.check_key_parity(request.get('PVK Pair')):
+        if not self.check_key_parity(self.cipher, request.get('PVK Pair')):
             self._debug_trace('PVK parity error')
             if self.approve_all:
                 self._debug_trace('Forced approval as --approve-all option set')
@@ -821,11 +813,11 @@ class HSM():
             return response
 
 
-    def translate_pinblock(self, request):
+    def translate_pinblock(self, request, header):
         """
         Get response to CA command (Translate PIN from TPK to ZPK)
         """
-        response = OutgoingMessage(header=self.header)
+        response = OutgoingMessage(header=header)
         response.set_response_code('CB')
         pinblock_format = request.get('Destination PIN block format')
 
@@ -836,7 +828,7 @@ class HSM():
             raise ValueError('Unsupported PIN block format: {}'.format(request.get('Source PIN block format').decode('utf-8')))
 
         # Source key parity check
-        if not self.check_key_parity(request.get('TPK')):
+        if not self.check_key_parity(self.cipher, request.get('TPK')):
             self._debug_trace('Source TPK parity error')
             if self.approve_all:
                 self._debug_trace('Forced approval as --approve-all option set')
@@ -846,7 +838,7 @@ class HSM():
             return response
 
         # Destination key parity check
-        if not self.check_key_parity(request.get('Destination Key')):
+        if not self.check_key_parity(self.cipher, request.get('Destination Key')):
             self._debug_trace('Destination ZPK parity error')
             if self.approve_all:
                 self._debug_trace('Forced approval as --approve-all option set')
@@ -874,11 +866,11 @@ class HSM():
         return response
 
 
-    def get_diagnostics_data(self):
+    def get_diagnostics_data(self, header):
         """
         Get response to NC command
         """
-        response = OutgoingMessage(header=self.header)
+        response = OutgoingMessage(header=header)
         response.set_response_code('ND')
         response.set_error_code('00')
         response.set('LMK Check Value', key_CV(raw2B(self.LMK), 16))
@@ -886,12 +878,12 @@ class HSM():
         return response
 
 
-    def get_key_check_value(self, request):
+    def get_key_check_value(self, request, header):
         """
         Get response to BU command
         TODO: return different check values (length of 6 or length of 16)
         """
-        response = OutgoingMessage(header=self.header)
+        response = OutgoingMessage(header=header)
         response.set_response_code('BV')
         response.set_error_code('00')
         
@@ -901,11 +893,11 @@ class HSM():
         response.set('Key Check Value', key_CV(key, 16))
         return response
 
-    def generate_key_a0(self, request):
+    def generate_key_a0(self, request, header):
         """
         Get response to A0 command
         """
-        response = OutgoingMessage(header=self.header)
+        response = OutgoingMessage(header=header)
         response.set_response_code('A1')
         response.set_error_code('00')
 
@@ -926,11 +918,11 @@ class HSM():
         return response
 
 
-    def translate_zpk(self, request):
+    def translate_zpk(self, request, header):
         """
         Get response to FA command
         """
-        response = OutgoingMessage(header=self.header)
+        response = OutgoingMessage(header=header)
         response.set_response_code('FB')
         response.set_error_code('00')
 
@@ -963,30 +955,31 @@ class HSM():
         return response
 
 
-    def get_response(self, request):
+    def get_response(self, request, header):
         """
+        Legacy dispatcher - pass header to handlers
         """
         rqst_command_code = request.get_command_code()
         if rqst_command_code == b'A0':
-            return self.generate_key_a0(request)
+            return self.generate_key_a0(request, header)
         elif rqst_command_code == b'BU':
-            return self.get_key_check_value(request)
+            return self.get_key_check_value(request, header)
         elif rqst_command_code == b'NC':
-            return self.get_diagnostics_data()
+            return self.get_diagnostics_data(header)
         elif rqst_command_code in [b'DC', b'EC']:
-            return self.verify_pin(request)
+            return self.verify_pin(request, header)
         elif rqst_command_code == b'CA':
-            return self.translate_pinblock(request)
+            return self.translate_pinblock(request, header)
         elif rqst_command_code == b'CW':
-            return self.generate_cvv(request)
+            return self.generate_cvv(request, header)
         elif rqst_command_code == b'CY':
-            return self.verify_cvv(request)
+            return self.verify_cvv(request, header)
         elif rqst_command_code == b'FA':
-            return self.translate_zpk(request)
+            return self.translate_zpk(request, header)
         elif rqst_command_code == b'HC':
-            return self.generate_key(request)
+            return self.generate_key(request, header)
         else:
-            response = OutgoingMessage(header=self.header)
+            response = OutgoingMessage(header=header)
             response.set_response_code('ZZ')
             response.set_error_code('00')
             return response
@@ -1010,8 +1003,7 @@ if __name__ == "__main__":
                         help='Approve all requests')
 
     args = parser.parse_args()
-    hsm = HSM(header=args.header,
-              key=args.key,
+    hsm = HSM(key=args.key,
               debug=args.debug,
               skip_parity=args.skip_parity,
               port=args.port,
