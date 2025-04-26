@@ -3,6 +3,8 @@ import socket
 import struct
 import os
 import threading
+from concurrent.futures import ThreadPoolExecutor
+from multiprocessing import cpu_count
 
 from tracetools.tracetools import trace
 from collections import OrderedDict
@@ -479,6 +481,7 @@ class HSM():
         self.skip_parity_check = skip_parity
         self.port = port if port else 1500
         self.approve_all = approve_all
+        self.thread_pool = ThreadPoolExecutor(max_workers=cpu_count())
         if self.approve_all:
             print('\n\n\tHSM is forced to approve all the requests!\n')
 
@@ -596,17 +599,19 @@ class HSM():
 
     def _client_thread(self, conn, client_name):
         """
-        Handle a client connection: receive messages and process them sequentially in the same thread.
+        Handle a client connection: receive messages and process them asynchronously 
+        while keeping the connection open.
         """
         # save original connection and assign current
         old_conn = getattr(self, 'conn', None)
         self.conn = conn
         print(f'Connected client: {client_name}')
         try:
-            # Process messages sequentially in this client thread (reuse thread and connection)
+            # Process messages asynchronously in thread pool while keeping connection
             while True:
                 data = self.recv_message(client_name)
-                self._handle_message(data, client_name)
+                # Submit request processing to thread pool
+                self.thread_pool.submit(self._handle_message, data, client_name)
         except IOError:
             print(f"Connection lost: {client_name}")
         except Exception as e:
