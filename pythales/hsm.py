@@ -573,33 +573,17 @@ class HSM():
         self.init_connection()
         print(self.info())
         try:
-            # main accept/process loop
+            # accept loop: spawn a thread for each incoming client
             while True:
                 try:
-                    self.conn, (ip, port) = self.sock.accept()
+                    conn, (ip, port) = self.sock.accept()
                 except Exception as e:
                     print(f"Error accepting connection: {e}")
                     continue
                 client_name = ip + ':' + str(port)
-                print(f'Connected client: {client_name}')
-                try:
-                    while True:
-                        data = self.recv_message(client_name)
-                        thread_name = f"HSM-{client_name}-{threading.active_count()}"
-                        threading.Thread(target=self._handle_message,
-                                         args=(data, client_name),
-                                         daemon=True,
-                                         name=thread_name).start()
-                except IOError:
-                    print(f"Connection lost: {client_name}")
-                except Exception as e:
-                    print(f"Error processing request from {client_name}: {e}")
-                finally:
-                    try:
-                        self.conn.close()
-                    except:
-                        pass
-                    print(f"Closed connection: {client_name}")
+                threading.Thread(target=self._client_thread,
+                                 args=(conn, client_name),
+                                 daemon=True).start()
         except KeyboardInterrupt:
             print("\nServer shutdown requested, exiting...")
         finally:
@@ -607,7 +591,36 @@ class HSM():
                 self.sock.close()
             except:
                 pass
-           
+
+    def _client_thread(self, conn, client_name):
+        """
+        Handle a client connection: receive messages and dispatch each in its own handler thread.
+        """
+        # save original connection and assign current
+        old_conn = getattr(self, 'conn', None)
+        self.conn = conn
+        print(f'Connected client: {client_name}')
+        try:
+            while True:
+                data = self.recv_message(client_name)
+                thread_name = f"HSM-{client_name}-{threading.active_count()}"
+                threading.Thread(target=self._handle_message,
+                                 args=(data, client_name),
+                                 daemon=True,
+                                 name=thread_name).start()
+        except IOError:
+            print(f"Connection lost: {client_name}")
+        except Exception as e:
+            print(f"Error processing request from {client_name}: {e}")
+        finally:
+            try:
+                conn.close()
+            except:
+                pass
+            print(f"Closed connection: {client_name}")
+            # restore previous connection if any
+            if old_conn is not None:
+                self.conn = old_conn
 
     def info(self):
         """
