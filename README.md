@@ -5,7 +5,7 @@ A primitive implementation of [Thales HSM](https://en.wikipedia.org/wiki/Hardwar
 
 ## Features
 
-- Asynchronous message processing using threads
+- Concurrent message processing using threads (asynchronous)
 - Dynamic (non-hardcoded) message header support
 - Automatic client reconnection handling
 - Graceful shutdown on Ctrl+C
@@ -48,62 +48,87 @@ Run:
 ```bash
 cd examples/
 ./hsm_server.py --help # check the options
-./hsm_server.py -d --skip-parity
+./hsm_server.py
 ```
 
 Output example:
 ```
-# ./hsm_server.py -d --skip-parity
- LMK: DEAFBEEDEAFBEEDEAFBEEDEAFBEEDEAF
- Firmware version: 0007-E000
- Message header: SSSS
- Listening on port 1500
- Connected client: 192.168.56.101:50010
- 17:59:49.278803 << 8 bytes received from 192.168.56.101:50010: 
-	00 06 53 53 53 53 4e 43                                 ..SSSSNC
- 17:59:49.279338 >> 35 bytes sent to 192.168.56.101:50010:
- 	00 21 53 53 53 53 4e 44 30 30 46 34 45 44 43 38         .!SSSSND00F4EDC8
- 	44 45 42 36 37 46 36 45 32 38 30 30 30 37 2d 45         DEB67F6E280007-E
-	30 30 30                                                000
-	[Response Code   ]: [ND]
-	[Error Code      ]: [00]
-	[LMK Check Value ]: [F4EDC8DEB67F6E28]
-	[Firmware Version]: [0007-E000]
- 18:01:13.089485 << 108 bytes received from 192.168.56.101:50010: 
-	00 6a 53 53 53 53 44 43 55 43 34 45 44 35 39 37         .jSSSSDCUC4ED597
-	45 45 30 43 39 36 39 37 31 30 34 45 44 33 39 39         EE0C9697104ED399
-	42 45 36 46 38 42 38 37 32 37 33 33 36 44 35 30         BE6F8B8727336D50
-	43 34 37 31 32 38 44 37 31 30 44 46 34 35 30 42         C47128D710DF450B
-	43 42 32 43 36 34 36 31 42 37 39 33 41 45 36 32         CB2C6461B793AE62
-	44 46 43 38 44 32 34 32 36 30 31 34 30 37 30 30         DFC8D24260140700
-	30 30 30 30 30 31 30 31 33 38 34 33                     000001013843	
-	[TPK                  ]: [UC4ED597EE0C9697104ED399BE6F8B872]
+./examples/hsm_server.py
+Listening on port 1500
+LMK: DEAFBEEDEAFBEEDEAFBEEDEAFBEEDEAF
+Firmware version: 0007-E000
+
+Connected client: 127.0.0.1:57216
+22:33:50.207815 << 107 bytes received from 127.0.0.1:57216:
+	00 69 95 13 b7 9c 45 43 43 34 45 44 35 39 37 45         .i....ECC4ED597E
+	45 30 43 39 36 39 37 31 30 34 45 44 33 39 39 42         E0C9697104ED399B
+	45 36 46 38 42 38 37 32 37 33 33 36 44 35 30 43         E6F8B8727336D50C
+	34 37 31 32 38 44 37 31 30 44 46 34 35 30 42 43         47128D710DF450BC
+	42 32 43 36 34 36 31 42 37 39 33 41 45 36 32 44         B2C6461B793AE62D
+	46 43 38 44 32 34 32 36 30 31 34 30 37 30 30 30         FC8D242601407000
+	30 30 30 30 31 30 31 33 38 34 33                        00001013843
+
+[ThreadPoolExecutor-0_0] Handling message from 127.0.0.1:57216
+Connected client: 127.0.0.1:57217
+	[Command Description  ]: [Verify an Interchange PIN using ABA PVV method]
+	[ZPK                  ]: [C4ED597EE0C9697104ED399BE6F8B872]
 	[PVK Pair             ]: [7336D50C47128D710DF450BCB2C6461B]
 	[PIN block            ]: [793AE62DFC8D2426]
 	[PIN block format code]: [01]
 	[Account Number       ]: [407000000010]
 	[PVKI                 ]: [1]
 	[PVV                  ]: [3843]
-	DEBUG: Decrypted pinblock: 0412748FFFFFFFEF
- 18:01:13.090230 >> 10 bytes sent to 192.168.56.101:50010:
-	00 08 53 53 53 53 44 44 30 30                           ..SSSSDD00
-	[Response Code]: [DD]
+
+22:33:50.208512 << 107 bytes received from 127.0.0.1:57217:
+	00 69 67 11 e9 f3 45 43 43 34 45 44 35 39 37 45         .ig...ECC4ED597E
+	45 30 43 39 36 39 37 31 30 34 45 44 33 39 39 42         E0C9697104ED399B
+	45 36 46 38 42 38 37 32 37 33 33 36 44 35 30 43         E6F8B8727336D50C
+	34 37 31 32 38 44 37 31 30 44 46 34 35 30 42 43         47128D710DF450BC
+	42 32 43 36 34 36 31 42 37 39 33 41 45 36 32 44         B2C6461B793AE62D
+	46 43 38 44 32 34 32 36 30 31 34 30 37 30 30 30         FC8D242601407000
+	30 30 30 30 31 30 31 33 38 34 33                        00001013843
+
+[ThreadPoolExecutor-0_1] Handling message from 127.0.0.1:57217
+	[Command Description  ]: [Verify an Interchange PIN using ABA PVV method]
+	[ZPK                  ]: [C4ED597EE0C9697104ED399BE6F8B872]
+	[PVK Pair             ]: [7336D50C47128D710DF450BCB2C6461B]
+	[PIN block            ]: [793AE62DFC8D2426]
+	[PIN block format code]: [01]
+	[Account Number       ]: [407000000010]
+	[PVKI                 ]: [1]
+	[PVV                  ]: [3843]
+
+22:33:50.209452 >> [ThreadPoolExecutor-0_0] 10 bytes sent to 127.0.0.1:57216:
+	00 08 95 13 b7 9c 45 44 30 30                           ......ED00
+
+[ThreadPoolExecutor-0_0] Active threads: 5
+	[Response Code]: [ED]
 	[Error Code   ]: [00]
- 18:01:13.104389 << 68 bytes received from 192.168.56.101:50010: 
-	00 42 53 53 53 53 43 59 55 31 43 31 45 42 31 30         .BSSSSCYU1C1EB10
-	39 30 36 38 31 43 43 39 45 36 30 30 33 45 30 35         90681CC9E6003E05
-	32 31 37 43 37 30 37 37 45 36 34 30 34 31 37 34         217C7077E6404174
-	30 37 30 30 30 30 30 30 30 31 30 34 3b 31 37 31         070000000104;171
-	32 32 30 31                                             2201
-	[CVK                   ]: [U1C1EB1090681CC9E6003E05217C7077E]
-	[CVV                   ]: [640]
-	[Primary Account Number]: [4174070000000104]
-	[Expiration Date       ]: [1712]
-	[Service Code          ]: [201]
- 18:01:13.104979 >> 10 bytes sent to 192.168.56.101:50010:
-	00 08 53 53 53 53 43 5a 30 30                           ..SSSSCZ00
-	[Response Code]: [CZ]
+
+22:33:50.209650 >> [ThreadPoolExecutor-0_1] 10 bytes sent to 127.0.0.1:57217:
+	00 08 67 11 e9 f3 45 44 30 30                           ..g...ED00
+
+[ThreadPoolExecutor-0_1] Active threads: 5
+	[Response Code]: [ED]
 	[Error Code   ]: [00]
+```
+
+## Performance
+
+Basic performance test results using `wrk` on a local machine:
+
+```
+Thread Stats   Avg      Stdev     Max   +/- Stdev
+  Latency     3.37ms    3.45ms  30.47ms   87.43%
+  Req/Sec   392.89     87.72   616.00     67.20%
+Latency Distribution
+   50%    2.06ms
+   75%    2.75ms
+   90%    8.51ms
+   99%   16.61ms
+14799 requests in 10.01s, 0.90MB read
+Requests/sec:   1477.71
+Transfer/sec:     92.36KB
 ```
 
 You may also check [examples](https://github.com/timgabets/pythales/tree/master/examples) for more sophisticated HSM server implementation with some features like command line options parsing etc. The application works as server that may simultaneously serve only one connected client.
