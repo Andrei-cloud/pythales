@@ -581,9 +581,11 @@ class HSM():
                     print(f"Error accepting connection: {e}")
                     continue
                 client_name = ip + ':' + str(port)
+                # Name the client thread and reuse it for handling all messages sequentially
                 threading.Thread(target=self._client_thread,
                                  args=(conn, client_name),
-                                 daemon=True).start()
+                                 daemon=True,
+                                 name=f"HSM-{client_name}").start()
         except KeyboardInterrupt:
             print("\nServer shutdown requested, exiting...")
         finally:
@@ -594,20 +596,17 @@ class HSM():
 
     def _client_thread(self, conn, client_name):
         """
-        Handle a client connection: receive messages and dispatch each in its own handler thread.
+        Handle a client connection: receive messages and process them sequentially in the same thread.
         """
         # save original connection and assign current
         old_conn = getattr(self, 'conn', None)
         self.conn = conn
         print(f'Connected client: {client_name}')
         try:
+            # Process messages sequentially in this client thread (reuse thread and connection)
             while True:
                 data = self.recv_message(client_name)
-                thread_name = f"HSM-{client_name}-{threading.active_count()}"
-                threading.Thread(target=self._handle_message,
-                                 args=(data, client_name),
-                                 daemon=True,
-                                 name=thread_name).start()
+                self._handle_message(data, client_name)
         except IOError:
             print(f"Connection lost: {client_name}")
         except Exception as e:
